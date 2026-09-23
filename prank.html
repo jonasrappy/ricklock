@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>RickLock — GOTCHA!</title>
+<style>
+:root{color-scheme:dark;--acid:#d5ff46;--pink:#ff73b5;--ink:#10110f}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--ink);color:#f5f4e9;font-family:-apple-system,BlinkMacSystemFont,sans-serif}
+body{min-height:100vh;overflow:hidden;display:flex;flex-direction:column;padding:32px 4vw 22px;background:radial-gradient(ellipse at 80% 40%,#253020 0,transparent 60%),#10110f;user-select:none}
+header{display:flex;justify-content:space-between;align-items:center;font-size:12px;letter-spacing:2px;font-weight:700}
+.brand{font-size:17px;letter-spacing:-.6px}.pill{border:1px solid #485035;padding:10px 15px;border-radius:40px;color:var(--acid);font:11px ui-monospace,monospace;letter-spacing:1px}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--acid);margin-right:8px;box-shadow:0 0 13px #d5ff4660}
+main{flex:1;display:grid;grid-template-columns:1.1fr 1fr .85fr;gap:3vw;align-items:center;padding:32px 0}
+.eyebrow{font:12px ui-monospace,monospace;letter-spacing:2px;color:var(--pink);margin-bottom:20px}
+h1{font-size:clamp(30px,3.55vw,100px);line-height:.96;letter-spacing:-.06em;margin:0;font-weight:900}h1 span{color:var(--acid)}
+.sub{color:#adafa4;font-size:15px;line-height:1.65;margin:25px 0 0;max-width:440px}
+.portrait{position:relative;transform:rotate(2deg);max-width:660px;justify-self:center;width:100%;animation:arrival .5s ease-out}
+.gif-frame{background:var(--acid);padding:12px 12px 0;border-radius:5px;box-shadow:18px 18px 0 #0006;overflow:hidden}
+.gif-frame img{width:100%;height:clamp(220px,43vh,630px);object-fit:cover;display:block;filter:contrast(1.06)}
+.caption{display:flex;justify-content:space-between;align-items:center;color:var(--ink);font-size:12px;font-weight:900;padding:17px 4px;letter-spacing:1px}
+.sticker{position:absolute;right:-15px;top:-22px;background:var(--pink);color:var(--ink);font-weight:900;font-size:18px;padding:15px 19px;transform:rotate(9deg);border:2px solid var(--ink);box-shadow:4px 4px 0 var(--ink)}
+.ticker{border-top:1px solid #3a3c31;border-bottom:1px solid #3a3c31;padding:13px 0;overflow:hidden;color:var(--acid);font:12px ui-monospace,monospace;letter-spacing:2px;white-space:nowrap}
+.ticker span{display:inline-block;animation:marquee 24s linear infinite}
+footer{display:flex;justify-content:space-between;gap:20px;padding-top:19px;color:#85887b;font:10px ui-monospace,monospace;letter-spacing:1px}
+#reaction{color:var(--pink);transition:opacity .15s}
+.busted{text-align:center;align-self:center;min-width:0}.busted h2{font-size:clamp(40px,4.1vw,108px);letter-spacing:-.06em;line-height:1;margin:0 0 20px;color:var(--pink);font-weight:950}
+.busted-frame{position:relative;background:#1a1e17;border:2px solid #586146;border-radius:12px;aspect-ratio:16/10;overflow:hidden;display:grid;place-items:center;box-shadow:0 14px 50px #0005}
+.busted-frame img{width:100%;height:100%;object-fit:contain;display:block}.busted-frame img[hidden]{display:none}
+.camera-placeholder{color:#9ba28e;font-size:14px;line-height:1.8;padding:16px}.camera-icon{display:block;font-size:43px;margin-bottom:10px}
+.camera-status{font:10px ui-monospace,monospace;line-height:1.6;letter-spacing:1px;color:var(--acid);margin-top:15px;min-height:36px}
+.busted[data-phase="capturing"] .busted-frame{border-color:var(--pink)}.busted[data-phase="saved"] .busted-frame{border-color:var(--acid)}
+.busted[data-phase="error"] .camera-status{color:var(--pink)}
+@keyframes marquee{to{transform:translateX(-35%)}}@keyframes arrival{from{opacity:0;transform:rotate(-5deg) scale(.85)}to{opacity:1;transform:rotate(2deg) scale(1)}}
+@media(min-aspect-ratio:5/2){body{padding:26px 4vw 20px}main{padding:22px 0}h1{font-size:clamp(42px,7vh,100px)}.gif-frame img{height:48vh}.portrait{max-width:600px}.sub{max-width:none}}
+@media(max-width:1000px){body{padding:20px 25px}main{gap:22px}h1{font-size:31px}.sticker{font-size:11px;right:-6px;padding:12px}.sub{font-size:12px}.pill{font-size:9px}footer{font-size:9px}.caption{font-size:9px}.busted h2{font-size:39px}}
+@media(prefers-reduced-motion:reduce){.ticker span,.portrait{animation:none}}
+</style></head><body>
+<header><div class="brand">RickLock ↗</div><div class="pill"><i class="dot"></i>SNOOPER DETECTED</div></header>
+<main><section><div class="eyebrow">403 / NICE TRY, THOUGH.</div><h1>GO FUCK<br><span>SOMEONE ELSE’S</span><br>COMPUTER.</h1><p class="sub">You were looking for settings.<br>You found Rick. Still not your computer.</p></section>
+<section class="busted" id="busted" data-phase="idle"><h2>BUSTED.</h2><div class="busted-frame"><img id="busted-photo" hidden alt="The camera photo taken when this prank was triggered"><div class="camera-placeholder" id="camera-placeholder"><span class="camera-icon">◎</span><span id="camera-placeholder-text">CAUGHT IN THE ACT.</span></div></div><div class="camera-status" id="camera-status" aria-live="polite">CAMERA STARTING — ONE PHOTO</div></section>
+<div class="portrait"><div class="gif-frame"><img src="rick.gif" alt="Rick Astley dancing — you have been rickrolled"><div class="caption"><span>HEAD OF COMPUTER SECURITY</span><span>R. ASTLEY ↗</span></div></div><div class="sticker">GET RICKROLLED.</div></div></main>
+<div class="ticker"><span>ACCESS DENIED ✳ VIBES APPROVED ✳ HANDS OFF THE KEYBOARD ✳ ABSOLUTELY NO ADMIN ENERGY ✳ ACCESS DENIED ✳ VIBES APPROVED ✳ HANDS OFF THE KEYBOARD ✳ ABSOLUTELY NO ADMIN ENERGY ✳ </span></div>
+<footer><span>RICKLOCK / ANTI-SNOOPING DIVISION</span><span id="reaction">YOUR CURIOSITY HAS BEEN REWARDED.</span><span>OWNER ACCESS: TYPE YOUR SECRET.</span></footer>
+<script>
+const lines=['STILL NOT YOUR COMPUTER.','THAT CLICK DID NOT HELP EITHER.','RICK IS YOUR IT DEPARTMENT NOW.','TRY YOUR OWN COMPUTER. WILD IDEA.','ACCESS LEVEL: NOSY.'];let n=0;
+document.addEventListener('click',()=>{document.getElementById('reaction').textContent=lines[n++%lines.length]});
+window.updateBusted=async state=>{
+  document.getElementById('busted').dataset.phase=state.phase;
+  document.getElementById('camera-status').textContent=state.message;
+  const photo=document.getElementById('busted-photo');
+  const placeholder=document.getElementById('camera-placeholder');
+  if(state.photo){if(photo.src!==state.photo)photo.src=state.photo;photo.hidden=false;placeholder.hidden=true;}
+  else{photo.removeAttribute('src');photo.hidden=true;placeholder.hidden=false;}
+  document.getElementById('camera-placeholder-text').textContent=state.phase==='demo'?'CAMERA OFF IN PREVIEW':state.phase==='error'?'RICKROLL STILL WORKS.':'CAUGHT IN THE ACT.';
+  if(state.photo){await photo.decode();await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);}
+};
+</script></body></html>

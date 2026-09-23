@@ -1,0 +1,6 @@
+.DS_Store
+.env*
+!.env.example
+RickLock.iconset/
+dock-before-ricklock.plist
+*.app/

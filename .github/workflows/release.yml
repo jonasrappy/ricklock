@@ -1,0 +1,33 @@
+name: Release app
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release version
+        run: |
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)
+          test "${GITHUB_REF_NAME#v}" = "$version"
+      - name: Build
+        run: |
+          cp .env.example .env
+          RICKLOCK_APP_DIR="$PWD/dist/RickLock.app" \
+          RICKLOCK_LAUNCHER_DIR="$PWD/dist/RickLock Launcher.app" \
+          ./build.sh
+      - name: Package and checksum
+        run: |
+          cd dist
+          ditto -c -k --keepParent RickLock.app RickLock.app.zip
+          shasum -a 256 RickLock.app.zip > RickLock.app.zip.sha256
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/RickLock.app.zip dist/RickLock.app.zip.sha256 --clobber
