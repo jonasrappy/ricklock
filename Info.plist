@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>RickLock</string>
-<key>CFBundleIdentifier</key><string>dk.jonassorensen.RickLock</string>
+<key>CFBundleIdentifier</key><string>app.ricklock.RickLock</string>
 <key>CFBundleName</key><string>RickLock</string>
 <key>CFBundleDisplayName</key><string>RickLock</string>
 <key>CFBundleIconFile</key><string>RickLock</string>

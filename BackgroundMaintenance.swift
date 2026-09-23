@@ -82,7 +82,7 @@ final class BackgroundMaintenance {
 
     private func validate(app: URL, releaseTag: String) -> Bool {
         guard let bundle = Bundle(url: app),
-              bundle.bundleIdentifier == "dk.jonassorensen.RickLock",
+              bundle.bundleIdentifier == "app.ricklock.RickLock",
               let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
               normalize(version) == normalize(releaseTag),
               compare(version, currentVersion) == .orderedDescending else { return false }

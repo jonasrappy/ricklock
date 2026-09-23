@@ -66,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private var cameraStarted = false
     private var cameraDemo = false
     private var permissionPending = false
-    private let photoSaveQueue = DispatchQueue(label: "dk.jonassorensen.RickLock.photo-save", qos: .utility)
+    private let photoSaveQueue = DispatchQueue(label: "app.ricklock.RickLock.photo-save", qos: .utility)
     private var pendingPhotoSaves = 0
     private var terminationWaitingForSave = false
     private let maintenance = BackgroundMaintenance()

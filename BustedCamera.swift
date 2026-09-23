@@ -17,7 +17,7 @@ enum CameraFailure: LocalizedError {
 
 /// Captures one JPEG, then releases the camera. No audio or video is recorded.
 final class BustedCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-    private let queue = DispatchQueue(label: "dk.jonassorensen.RickLock.camera")
+    private let queue = DispatchQueue(label: "app.ricklock.RickLock.camera")
     private let context = CIContext()
     private var session: AVCaptureSession?
     private var output: AVCaptureVideoDataOutput?
