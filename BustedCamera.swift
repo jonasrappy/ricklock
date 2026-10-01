@@ -17,66 +17,80 @@ enum CameraFailure: LocalizedError {
 
 /// Captures one JPEG, then releases the camera. No audio or video is recorded.
 final class BustedCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-    private let queue = DispatchQueue(label: "app.ricklock.RickLock.camera")
+    private let queue = DispatchQueue(label: "app.ricklock.RickLock.camera", qos: .userInitiated)
     private let context = CIContext()
     private var session: AVCaptureSession?
     private var output: AVCaptureVideoDataOutput?
     private var completion: ((Result<Data, Error>) -> Void)?
     private var timeout: DispatchWorkItem?
-    private var readyAfter = Date.distantFuture
     private var captured = false
     private var generation = UUID()
+    private var firstFrameAt: TimeInterval?
+
+    func prepare(completion: ((Result<Void, Error>) -> Void)? = nil) {
+        queue.async {
+            guard self.completion == nil else { return }
+            let result = Result { try self.configure() }
+            if case .failure = result { self.cleanup() }
+            DispatchQueue.main.async { completion?(result) }
+        }
+    }
+
+    private func configure() throws {
+        guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else { throw CameraFailure.permission }
+        guard session == nil else { return }
+        let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .unspecified)
+            ?? AVCaptureDevice.default(for: .video)
+        guard let camera else { throw CameraFailure.unavailable }
+        let session = AVCaptureSession()
+        let input = try AVCaptureDeviceInput(device: camera)
+        let output = AVCaptureVideoDataOutput()
+        output.alwaysDiscardsLateVideoFrames = true
+        // Prefer YUV luma planes; leave other devices in their native format.
+        output.videoSettings = nil
+        output.setSampleBufferDelegate(self, queue: queue)
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+        if session.canSetSessionPreset(.hd1280x720) { session.sessionPreset = .hd1280x720 }
+        guard session.canAddInput(input) else { throw CameraFailure.configuration }
+        session.addInput(input)
+        guard session.canAddOutput(output) else { throw CameraFailure.configuration }
+        session.addOutput(output)
+        if let format = [kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange].first(where: { output.availableVideoPixelFormatTypes.contains($0) }) {
+            output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: format]
+        }
+        self.session = session
+        self.output = output
+    }
 
     func capture(completion: @escaping (Result<Data, Error>) -> Void) {
         queue.async {
-            self.cleanup()
+            guard self.completion == nil else { return }
             self.generation = UUID()
             let generation = self.generation
             self.completion = completion
             self.captured = false
-            guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
-                self.finish(.failure(CameraFailure.permission)); return
-            }
-            let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .unspecified)
-                ?? AVCaptureDevice.default(for: .video)
-            guard let camera else { self.finish(.failure(CameraFailure.unavailable)); return }
+            self.firstFrameAt = nil
             do {
-                let session = AVCaptureSession()
-                let input = try AVCaptureDeviceInput(device: camera)
-                let output = AVCaptureVideoDataOutput()
-                output.alwaysDiscardsLateVideoFrames = true
-                output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-                output.setSampleBufferDelegate(self, queue: self.queue)
-                session.beginConfiguration()
-                if session.canSetSessionPreset(.hd1280x720) { session.sessionPreset = .hd1280x720 }
-                guard session.canAddInput(input) else {
-                    session.commitConfiguration(); self.finish(.failure(CameraFailure.configuration)); return
-                }
-                session.addInput(input)
-                guard session.canAddOutput(output) else {
-                    session.commitConfiguration(); self.finish(.failure(CameraFailure.configuration)); return
-                }
-                session.addOutput(output)
-                session.commitConfiguration()
-                self.session = session
-                self.output = output
-                self.readyAfter = .distantFuture
-                session.startRunning()
-                // Give auto-exposure a moment to settle instead of saving a black first frame.
-                self.readyAfter = Date().addingTimeInterval(0.35)
+                try self.configure()
                 let timeout = DispatchWorkItem { [weak self] in
                     guard let self, self.generation == generation, self.completion != nil else { return }
                     self.finish(.failure(CameraFailure.timeout))
                 }
                 self.timeout = timeout
                 self.queue.asyncAfter(deadline: .now() + 8, execute: timeout)
+                self.session?.startRunning()
             } catch { self.finish(.failure(error)) }
         }
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard completion != nil, !captured, Date() >= readyAfter,
+        guard output === self.output, completion != nil, !captured,
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if firstFrameAt == nil { firstFrameAt = now }
+        // Skip near-black startup frames only; never wait more than 150 ms for exposure.
+        if now - firstFrameAt! < 0.15, let brightness = Self.brightness(of: buffer), brightness < 0.05 { return }
         captured = true
         let generation = self.generation
         let image = CIImage(cvPixelBuffer: buffer)
@@ -90,13 +104,39 @@ final class BustedCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         }
     }
 
-    func cancel() { queue.async { self.generation = UUID(); self.completion = nil; self.cleanup() } }
+    func cancel(completion: (() -> Void)? = nil) {
+        queue.async {
+            self.generation = UUID()
+            self.completion = nil
+            self.cleanup()
+            DispatchQueue.main.async { completion?() }
+        }
+    }
+
+    private static func brightness(of buffer: CVPixelBuffer) -> Double? {
+        let format = CVPixelBufferGetPixelFormatType(buffer)
+        guard format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange || format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange else { return nil }
+        guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return nil }
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+        let width = CVPixelBufferGetWidthOfPlane(buffer, 0)
+        let height = CVPixelBufferGetHeightOfPlane(buffer, 0)
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        var total = 0.0
+        for y in 0..<16 {
+            for x in 0..<16 { total += Double(bytes[(y * height / 16) * stride + x * width / 16]) }
+        }
+        let average = total / 256
+        return format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ? max(0, average - 16) / 219 : average / 255
+    }
 
     private func finish(_ result: Result<Data, Error>) {
         let callback = completion
         completion = nil
-        cleanup()
         DispatchQueue.main.async { callback?(result) }
+        // Deliver the photo without waiting for synchronous camera shutdown.
+        cleanup()
     }
 
     private func cleanup() {

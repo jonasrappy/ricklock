@@ -32,21 +32,25 @@ final class UnlockInput {
 }
 
 final class OverlayWindow: NSWindow {
+    var displayID: CGDirectDisplayID?
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
 
-final class DesktopView: NSView {
-    let picture: NSImage
-    init(frame: NSRect, picture: NSImage) { self.picture = picture; super.init(frame: frame) }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+final class TransparentOverlayView: NSView {
     override var acceptsFirstResponder: Bool { true }
-    override func draw(_ dirtyRect: NSRect) {
-        // Cover the screen without distorting the image; crop any small aspect-ratio mismatch.
-        let scale = max(bounds.width / picture.size.width, bounds.height / picture.size.height)
-        let size = NSSize(width: picture.size.width * scale, height: picture.size.height * scale)
-        let destination = NSRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
-        picture.draw(in: destination, from: .zero, operation: .copy, fraction: 1)
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(point) ? self : nil }
+}
+
+struct DisplayLayout: Equatable {
+    let id: CGDirectDisplayID
+    let frame: NSRect
+    static var current: [DisplayLayout] {
+        NSScreen.screens.compactMap { screen in
+            guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+            return DisplayLayout(id: id.uint32Value, frame: screen.frame)
+        }
     }
 }
 
@@ -58,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private var revealed = false
     private var isPrankArmed = false
     private var previousPresentation: NSApplication.PresentationOptions = []
-    private var screenFrames: [NSRect] = []
+    private var screenLayout: [DisplayLayout] = []
     private var pendingArm: DispatchWorkItem?
     private var previousApp: NSRunningApplication?
     private let camera = BustedCamera()
@@ -100,8 +104,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             return self.handle(event)
         }
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(disarm), name: NSWorkspace.willSleepNotification, object: nil)
-        if CommandLine.arguments.contains("--camera-demo") {
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(restoreOverlays), name: NSWorkspace.didWakeNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(restoreOverlays), name: NSWorkspace.screensDidWakeNotification, object: nil)
+        if CommandLine.arguments.contains("--overlay-ui-test") {
+            unlock = UnlockInput(expected: digest("test-code"))
+            arm()
+            cameraStarted = true
+            cameraState = ["phase": "demo", "message": "PREVIEW — CAMERA OFF", "photo": ""]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 45) { [weak self] in self?.quit() }
+        } else if CommandLine.arguments.contains("--camera-demo") {
             testCamera()
         } else if CommandLine.arguments.contains("--demo") {
             demo()
@@ -112,12 +123,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if windows.isEmpty { activatePrank() }
+        if CommandLine.arguments.contains("--overlay-ui-test") { return true }
+        if isPrankArmed { restoreOverlays() }
+        else if windows.isEmpty { activatePrank() }
         return true
     }
 
     @objc private func activatePrank() {
-        guard windows.isEmpty, pendingArm == nil, !permissionPending else { return }
+        guard !isPrankArmed, windows.isEmpty, pendingArm == nil, !permissionPending else { return }
         guard loadUnlockConfiguration() else { return }
         if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
             requestCameraPermission { [weak self] in self?.activatePrank() }
@@ -134,48 +147,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     private func arm() {
-        guard let url = Bundle.main.url(forResource: "desktop", withExtension: "png"), let externalImage = NSImage(contentsOf: url) else { return }
-        let internalImage = Bundle.main.url(forResource: "desktop-internal", withExtension: "png").flatMap { NSImage(contentsOf: $0) } ?? externalImage
         item.button?.title = ""
         revealed = false
         cameraDemo = false
         resetCamera()
         unlock?.reset()
         isPrankArmed = true
-        screenFrames = NSScreen.screens.map(\.frame)
+        if !CommandLine.arguments.contains("--overlay-ui-test") { camera.prepare() }
         previousPresentation = NSApp.presentationOptions
-        NSApp.presentationOptions = [.hideDock, .hideMenuBar, .disableProcessSwitching, .disableHideApplication]
-        for screen in NSScreen.screens {
-            let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
-            let isBuiltIn = displayID.map { CGDisplayIsBuiltin($0) != 0 } ?? false
-            let image = isBuiltIn ? internalImage : externalImage
-            let window = OverlayWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
-            window.title = "RickLock — decoy desktop"
+        NSApp.presentationOptions = [.disableHideApplication]
+        synchronizeOverlays(with: DisplayLayout.current)
+        NSLog("RickLock: armed on %ld screen(s)", windows.count)
+    }
+
+    private func synchronizeOverlays(with layout: [DisplayLayout], present: Bool = true) {
+        guard isPrankArmed else { return }
+        screenLayout = layout
+        let previousWindows = windows
+        var activeWindows: [NSWindow] = []
+        for display in layout {
+            if let window = previousWindows.first(where: { ($0 as? OverlayWindow)?.displayID == display.id }) {
+                window.setFrame(display.frame, display: true)
+                if present { window.orderFrontRegardless() }
+                activeWindows.append(window)
+                continue
+            }
+            let window = OverlayWindow(contentRect: display.frame, styleMask: .borderless, backing: .buffered, defer: false)
+            window.displayID = display.id
+            window.title = "RickLock — transparent overlay"
             window.setAccessibilityRole(.window)
             window.setAccessibilitySubrole(.standardWindow)
             window.level = .screenSaver
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             window.isReleasedWhenClosed = false
             window.hasShadow = false
-            window.backgroundColor = .black
-            window.contentView = DesktopView(frame: NSRect(origin: .zero, size: screen.frame.size), picture: image)
-            windows.append(window)
-            window.orderFrontRegardless()
-            NSLog("RickLock: %@ display uses %@ screenshot", isBuiltIn ? "built-in" : "external", isBuiltIn ? "internal" : "external")
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.ignoresMouseEvents = false
+            let view = TransparentOverlayView(frame: NSRect(origin: .zero, size: display.frame.size))
+            view.autoresizingMask = [.width, .height]
+            window.contentView = view
+            if revealed { showPrank(in: window) }
+            activeWindows.append(window)
+            if present { window.orderFrontRegardless() }
         }
+        windows = activeWindows
+        // Cover remaining displays before retiring disconnected windows.
+        for window in previousWindows where !activeWindows.contains(where: { $0 === window }) {
+            if let web = window.contentView as? WKWebView {
+                web.stopLoading()
+                webViews.removeAll { $0 === web }
+            }
+            window.delegate = nil
+            window.close()
+        }
+        guard present, !windows.isEmpty else { return }
         NSApp.activate(ignoringOtherApps: true)
         let target = windows.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? windows.first
         target?.makeKeyAndOrderFront(nil)
         target?.makeFirstResponder(target?.contentView)
-        NSLog("RickLock: armed on %ld screen(s)", windows.count)
     }
 
     @objc private func screensChanged() {
-        // Hiding the menu bar / Dock can emit this notification without a display change.
-        // Only disarm when the actual display arrangement changes.
-        guard isPrankArmed, screenFrames != NSScreen.screens.map(\.frame) else { return }
-        NSLog("RickLock: display arrangement changed")
-        disarm()
+        let layout = DisplayLayout.current
+        guard isPrankArmed, screenLayout != layout else { return }
+        synchronizeOverlays(with: layout)
+        NSLog("RickLock: display arrangement changed; still armed on %ld screen(s)", windows.count)
+    }
+
+    @objc private func restoreOverlays() {
+        guard isPrankArmed else { return }
+        synchronizeOverlays(with: DisplayLayout.current)
+    }
+
+    func applicationDidResignActive(_ notification: Notification) {
+        guard isPrankArmed else { return }
+        DispatchQueue.main.async { [weak self] in self?.restoreOverlays() }
     }
 
     private func handle(_ event: NSEvent) -> NSEvent? {
@@ -195,23 +242,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         guard !revealed else { return }
         revealed = true
         NSLog("RickLock: prank revealed")
-        for window in windows {
-            window.title = "RickLock — GOTCHA!"
-            let config = WKWebViewConfiguration()
-            config.websiteDataStore = .nonPersistent()
-            let web = WKWebView(frame: window.contentView?.bounds ?? .zero, configuration: config)
-            web.autoresizingMask = [.width, .height]
-            web.navigationDelegate = self
-            window.contentView = web
-            webViews.append(web)
-            if let page = Bundle.main.url(forResource: "prank", withExtension: "html") {
-                web.loadFileURL(page, allowingReadAccessTo: page.deletingLastPathComponent())
-            }
+        startCameraCapture()
+        for window in windows { showPrank(in: window) }
+    }
+
+    private func showPrank(in window: NSWindow) {
+        window.title = "RickLock — GOTCHA!"
+        window.isOpaque = true
+        window.backgroundColor = .black
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let web = WKWebView(frame: window.contentView?.bounds ?? .zero, configuration: config)
+        web.autoresizingMask = [.width, .height]
+        web.navigationDelegate = self
+        window.contentView = web
+        webViews.append(web)
+        if let page = Bundle.main.url(forResource: "prank", withExtension: "html") {
+            web.loadFileURL(page, allowingReadAccessTo: page.deletingLastPathComponent())
         }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         updateCameraView(webView)
+    }
+
+    private func startCameraCapture() {
         guard (isPrankArmed || cameraDemo), revealed, !cameraStarted else { return }
         cameraStarted = true
         let run = cameraRun
@@ -295,7 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     @objc private func testCamera() {
-        guard windows.isEmpty, pendingArm == nil, !permissionPending else { return }
+        guard !isPrankArmed, windows.isEmpty, pendingArm == nil, !permissionPending else { return }
         if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
             requestCameraPermission { [weak self] in self?.testCamera() }
             return
@@ -330,7 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     @objc private func demo() {
-        guard windows.isEmpty, pendingArm == nil else { return }
+        guard !isPrankArmed, windows.isEmpty, pendingArm == nil else { return }
         previousApp = NSWorkspace.shared.frontmostApplication
         let window = OverlayWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -356,6 +411,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         item?.button?.title = ""
         let restorePresentation = isPrankArmed
         isPrankArmed = false
+        screenLayout.removeAll()
         if restorePresentation { NSApp.presentationOptions = previousPresentation }
         unlock?.reset()
         let closing = windows
@@ -375,7 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     private func checkForUpdate() {
-        guard windows.isEmpty, pendingArm == nil, pendingPhotoSaves == 0, !permissionPending, !updatePrepared else {
+        guard !isPrankArmed, windows.isEmpty, pendingArm == nil, pendingPhotoSaves == 0, !permissionPending, !updatePrepared else {
             scheduleUpdateCheck(after: 300); return
         }
         maintenance.check { [weak self] replacement in
@@ -386,6 +442,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     private func installUpdate(_ replacement: URL) {
+        guard !isPrankArmed, windows.isEmpty, pendingArm == nil, pendingPhotoSaves == 0, !permissionPending else {
+            scheduleUpdateCheck(after: 300); return
+        }
         guard let bundledHelper = Bundle.main.url(forResource: ".support", withExtension: nil) else { return }
         let helper = FileManager.default.temporaryDirectory.appendingPathComponent(".ricklock-support-\(UUID().uuidString)")
         do {
@@ -409,11 +468,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "RickLock 🎭"
-        alert.informativeText = "1. Click the Dock lock or choose Activate prank. No code required.\n2. Your decoy screenshots cover all displays after 3 seconds.\n3. The first click or scroll reveals Rick and takes one camera photo. BUSTED and the photo appear in the center.\n4. Type / followed by your code to dismiss. No Enter required.\n\nPhotos appear first, then save in the background to Desktop/capture. Use Open Busted photos to view them. Saving continues after unlock. The camera shuts off after each photo and when you unlock. No audio is captured. macOS remembers camera permission between launches.\n\nNormal minimize, ⌘Q and ⌘Tab are blocked during the prank. Preview mode does not use the camera. Your other apps keep running. This is a prank, not a secure macOS lock."
+        alert.informativeText = "1. Click the Dock lock or choose Activate prank. No code required.\n2. A transparent overlay blocks input on every display after 3 seconds. Your current apps remain visible.\n3. The first click or scroll reveals Rick and takes one camera photo. BUSTED and the photo appear in the center.\n4. Type / followed by your code to dismiss. No Enter required.\n\nPhotos appear first, then save in the background to Desktop/capture. Use Open Busted photos to view them. Saving continues after unlock. The camera shuts off after each photo and when you unlock. No audio is captured. macOS remembers camera permission between launches.\n\nNormal minimize, ⌘Q and ⌘Tab are blocked during the prank. Preview mode does not use the camera. Your other apps keep running. Disconnecting a monitor and waking from sleep keep the prank active. This is a prank, not a secure macOS lock."
         alert.runModal()
     }
 
     @objc private func quit() { disarm(); NSApp.terminate(nil) }
+
+    func testOverlayLifecycle() {
+        unlock = UnlockInput(expected: digest("test-code"))
+        isPrankArmed = true
+        let internalDisplay = DisplayLayout(id: 1, frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let externalDisplay = DisplayLayout(id: 2, frame: NSRect(x: 800, y: 0, width: 1200, height: 800))
+        synchronizeOverlays(with: [internalDisplay, externalDisplay], present: false)
+        precondition(windows.count == 2)
+        let internalWindow = windows[0]
+        precondition(!internalWindow.isOpaque && internalWindow.backgroundColor == .clear)
+        precondition(!internalWindow.ignoresMouseEvents)
+        precondition(internalWindow.contentView?.hitTest(NSPoint(x: 10, y: 10)) != nil)
+        precondition(!unlock!.feed("/test-"))
+        synchronizeOverlays(with: [internalDisplay], present: false)
+        precondition(isPrankArmed && windows.count == 1 && windows[0] === internalWindow)
+        precondition(unlock!.feed("code"))
+        synchronizeOverlays(with: [], present: false)
+        precondition(isPrankArmed && windows.isEmpty)
+        activatePrank()
+        demo()
+        testCamera()
+        precondition(isPrankArmed && windows.isEmpty && pendingArm == nil && !cameraDemo)
+        synchronizeOverlays(with: [internalDisplay], present: false)
+        precondition(isPrankArmed && windows.count == 1)
+        cameraStarted = true // Lifecycle checks must never start a camera capture.
+        reveal()
+        let run = cameraRun
+        synchronizeOverlays(with: [externalDisplay], present: false)
+        precondition(isPrankArmed && revealed && cameraStarted && cameraRun == run)
+        precondition(webViews.count == 1 && windows[0].contentView === webViews[0])
+        let resized = DisplayLayout(id: 2, frame: NSRect(x: 0, y: 0, width: 900, height: 700))
+        let survivingWindow = windows[0]
+        synchronizeOverlays(with: [resized], present: false)
+        precondition(windows[0] === survivingWindow && survivingWindow.frame == resized.frame)
+        precondition(revealed && isPrankArmed)
+        disarm()
+        precondition(!isPrankArmed && windows.isEmpty && webViews.isEmpty)
+        print("PASS: transparent input view, unplug, reconnect, zero displays, resize, revealed state and unlock preservation")
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard pendingPhotoSaves > 0 else { return .terminateNow }
         terminationWaitingForSave = true
@@ -447,5 +545,43 @@ if CommandLine.arguments.contains("--self-test") {
 }
 let app = NSApplication.shared
 let delegate = AppDelegate()
+if CommandLine.arguments.contains("--camera-speed-test") {
+    app.setActivationPolicy(.accessory)
+    let camera = BustedCamera()
+    let capture = {
+        let started = ProcessInfo.processInfo.systemUptime
+        camera.capture { result in
+            switch result {
+            case .success(let data):
+                let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+                guard let image = NSBitmapImageRep(data: data) else { exit(1) }
+                var brightness = 0.0
+                for y in 0..<16 {
+                    for x in 0..<16 {
+                        guard let color = image.colorAt(x: x * image.pixelsWide / 16, y: y * image.pixelsHigh / 16)?.usingColorSpace(.sRGB) else { exit(1) }
+                        brightness += 0.2126 * color.redComponent + 0.7152 * color.greenComponent + 0.0722 * color.blueComponent
+                    }
+                }
+                print(String(format: "PASS: camera photo delivered in %.0f ms; %dx%d JPEG, %d bytes; mean brightness %.1f/255", elapsed, image.pixelsWide, image.pixelsHigh, data.count, brightness * 255 / 256))
+                camera.cancel { exit(0) }
+            case .failure(let error):
+                print("FAIL: " + error.localizedDescription)
+                exit(1)
+            }
+        }
+    }
+    if CommandLine.arguments.contains("--prepared") {
+        camera.prepare { result in
+            if case .failure(let error) = result { print("FAIL: " + error.localizedDescription); exit(1) }
+            capture()
+        }
+    } else { capture() }
+    app.run()
+    exit(0)
+}
+if CommandLine.arguments.contains("--overlay-self-test") {
+    delegate.testOverlayLifecycle()
+    exit(0)
+}
 app.delegate = delegate
 app.run()

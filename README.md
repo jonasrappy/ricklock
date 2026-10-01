@@ -5,7 +5,7 @@ A local macOS menu-bar prank with a pinned lock icon in the Dock. This is not a 
 ## Using the app
 
 - Click the Dock lock, or select **Activate prank** from the theater-mask menu-bar icon. Activation does not require a code.
-- After three seconds, decoy screenshots cover every display.
+- After three seconds, transparent input-blocking windows cover every display. Your current apps, Dock and menu bar remain visible underneath, with no screenshot, tint or blur.
 - The first click or scroll reveals the Rick Astley GIF and the message, starts the camera, and displays one photo underneath **BUSTED** in the center. The photo then saves in the background to **Desktop/capture**.
 - The camera indicator remains visible. The camera shuts off after capture, on error, or when the prank is dismissed. There is no audio capture or saved video.
 - Type `/` followed by your agreed code to dismiss. No Enter is required.
@@ -14,7 +14,7 @@ A local macOS menu-bar prank with a pinned lock icon in the Dock. This is not a 
 - **Test Busted camera…** opens an ordinary preview and takes one real photo.
 - **Open Busted photos** opens the local photo archive.
 
-The built-in MacBook display uses `desktop-internal.png`; external displays use `desktop.png`. Images cover their displays proportionally, cropping any aspect-ratio mismatch instead of stretching. The built-in image also works when no external display is connected.
+Connecting or disconnecting a display, changing resolution, and waking from sleep preserve the active prank and unlock input. Overlays follow the current displays, including the built-in MacBook display after USB-C is unplugged. If Rick has already been revealed, replacement displays show the same prank and camera state without starting another photo.
 
 ## Camera permission and storage
 
@@ -26,13 +26,13 @@ Photos are timestamped JPEGs stored only in:
 
 Photos are displayed before background disk writing begins. A short fallback timer starts saving if the view closes or does not acknowledge display. Saving continues after unlocking, and a normal application quit waits for pending saves. Files are written atomically and synchronized before the status changes to SAVED. Saved files remain after shutdown or restart; an abrupt power loss or force quit before the write completes can still lose a pending photo. If saving fails, the image remains visible with an error message.
 
-The archive is outside the app bundle, so rebuilding does not replace the photos. The folder uses owner-only access when created and saved photos use owner-only read/write permissions. RickLock does not upload photos or add them to the Photos library. If your Desktop is synced by iCloud or another service, that service may also sync this folder. macOS may request Desktop-folder access once. There is no automatic deletion; manage retained photos through **Open Busted photos**. Photos from earlier versions remain in `~/Library/Application Support/RickLock/Busted`; they are not moved or deleted. The camera is not pre-warmed while the decoy desktop is waiting for a click.
+The archive is outside the app bundle, so rebuilding does not replace the photos. The folder uses owner-only access when created and saved photos use owner-only read/write permissions. RickLock does not upload photos or add them to the Photos library. If your Desktop is synced by iCloud or another service, that service may also sync this folder. macOS may request Desktop-folder access once. There is no automatic deletion; manage retained photos through **Open Busted photos**. Photos from earlier versions remain in `~/Library/Application Support/RickLock/Busted`; they are not moved or deleted. The camera is not pre-warmed while the transparent overlay is waiting for a click.
 
-The camera briefly settles its exposure before returning a single frame. Starting camera hardware is not instantaneous. A capture timeout or unlocking cancels capture; saving of an already captured and displayed photo continues. Each activation produces at most one photo, even with multiple displays or repeated clicks.
+The capture session is configured while the overlay is armed, but starts running only on the first click or scroll. Capture begins immediately, in parallel with loading the Rickroll page. The first usable frame is encoded without a fixed exposure-settling delay. Near-black startup frames are skipped for at most 150 ms; lighting may still be less stable than after waiting longer. The photo is delivered without waiting for camera shutdown. Starting camera hardware is not instantaneous. A capture timeout or unlocking cancels capture; saving of an already captured and displayed photo continues. Each activation produces at most one photo, even with multiple displays or repeated clicks.
 
 All UI copy, comments, and documentation are in English. The supplied desktop screenshots are preserved as original user assets. The app uses local GIF and image files, stores the unlock code as a hash, and consumes keyboard events only in its own prank windows. Other apps continue running. It does not change system sleep or lock settings and restores its presentation settings on dismissal.
 
-System force quit and restart remain available. Use the real macOS lock to protect data. RickLock dismisses itself when the physical display arrangement changes or the computer goes to sleep.
+System force quit and restart remain available. Use the real macOS lock to protect data. Display changes and sleep do not dismiss RickLock; type your unlock code to dismiss it normally.
 
 ## Source and rebuilding
 
@@ -46,7 +46,7 @@ Set `RICKLOCK_PASSWORD` in `.env` without a leading slash. For example, `RICKLOC
 
 `.env` is ignored by Git. Commit `.env.example`, but never commit `.env`. The build copies `.env` with owner-only permissions to `~/Library/Application Support/RickLock/.env`; the app reads that file when each prank is activated and keeps only its hash in memory. The secret is not compiled into Swift or copied into the app bundle. Re-run `./build.sh` after changing the source `.env`.
 
-The repository includes `desktop.png` for external displays and `desktop-internal.png` for the built-in MacBook display. Replace them with your own decoy screenshots before building if desired.
+The original `desktop.png` and `desktop-internal.png` assets remain in the repository but are no longer displayed or required for building.
 
 - `main.swift`: menu-bar app, overlay lifecycle, camera UI, and local unlock handling.
 - `RickLockConfiguration.swift`: strict `.env` loading for the unlock password.
@@ -60,6 +60,8 @@ Close RickLock before running `./build.sh`. The default output is `~/Application
 
 GIF source: https://media.giphy.com/media/Vuw9m5wXviFIQ/giphy.gif
 
-Desktop assets: replace `desktop.png` and `desktop-internal.png` with your own external-display and built-in-display decoy screenshots before building.
+`--overlay-self-test` checks transparent input handling and simulated display disconnect, reconnect, resize and revealed-state preservation without showing overlay windows or using the camera. `--overlay-ui-test` runs a camera-free transparent overlay test, unlocked with `/test-code`, and exits automatically after 45 seconds.
+
+`--camera-speed-test` takes one real webcam photo and prints capture-to-JPEG latency and image dimensions without saving it. Add `--prepared` to measure capture after session configuration, as during a normal armed prank.
 
 Camera-permission reference: https://developer.apple.com/documentation/bundleresources/requesting-authorization-for-media-capture-on-macos

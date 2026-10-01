@@ -7,12 +7,6 @@ if [[ ! -f "$source_dir/.env" ]]; then
   print -u2 "Missing $source_dir/.env. Copy .env.example to .env and set RICKLOCK_PASSWORD without the leading slash."
   exit 1
 fi
-for screenshot in desktop.png desktop-internal.png; do
-  if [[ ! -f "$source_dir/$screenshot" ]]; then
-    print -u2 "Missing $source_dir/$screenshot. Add your own decoy screenshot before building."
-    exit 1
-  fi
-done
 mkdir -p "$config_dir"
 chmod 700 "$config_dir"
 install -m 600 "$source_dir/.env" "$config_dir/.env"
@@ -22,7 +16,7 @@ iconutil -c icns "$source_dir/RickLock.iconset" -o "$app_dir/Contents/Resources/
 xcrun swiftc -O "$source_dir/main.swift" "$source_dir/BustedCamera.swift" "$source_dir/RickLockConfiguration.swift" "$source_dir/BackgroundMaintenance.swift" -o "$app_dir/Contents/MacOS/RickLock" -framework AppKit -framework WebKit -framework CryptoKit -framework AVFoundation -framework CoreImage
 xcrun swiftc -O "$source_dir/AppMaintenance.swift" -o "$app_dir/Contents/Resources/.support" -framework AppKit
 cp -X "$source_dir/Info.plist" "$app_dir/Contents/Info.plist"
-cp -X "$source_dir/prank.html" "$source_dir/rick.gif" "$source_dir/desktop.png" "$source_dir/desktop-internal.png" "$app_dir/Contents/Resources/"
+cp -X "$source_dir/prank.html" "$source_dir/rick.gif" "$app_dir/Contents/Resources/"
 codesign --force --sign - "$app_dir"
 "$app_dir/Contents/MacOS/RickLock" --self-test
 launcher_dir="${RICKLOCK_LAUNCHER_DIR:-$HOME/Applications/RickLock Launcher.app}"
