@@ -62,6 +62,27 @@ struct DisplayLayout: Equatable {
     }
 }
 
+enum PrankTrigger {
+    static func isInteraction(_ event: NSEvent) -> Bool {
+        switch event.type {
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown,
+             .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .smartMagnify:
+            return true
+        case .scrollWheel, .swipe:
+            return event.deltaX != 0 || event.deltaY != 0 || event.deltaZ != 0
+        case .magnify:
+            return event.magnification != 0
+        case .rotate:
+            return event.rotation != 0
+        case .systemDefined:
+            // Media-key presses only; releases and unrelated system events stay quiet.
+            return event.subtype.rawValue == 8 && (event.data1 >> 8) & 0xff == 0x0a
+        default:
+            return false
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, NSMenuItemValidation {
     private var item: NSStatusItem!
     private var windows: [NSWindow] = []
@@ -164,7 +185,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         guard inputFilter.start(handler: { [weak self] event in
             guard let self, self.isPrankArmed else { return }
             if let local = NSEvent(cgEvent: event) { _ = self.handle(local, deferReveal: true) }
-            else { self.unlock?.reset(); self.queueReveal() }
         }) else {
             showInputPermissionError()
             return
@@ -186,7 +206,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             self.inputFilter.ensureEnabled()
             let hasKeyWindow = self.windows.contains { $0 === NSApp.keyWindow }
             if !NSApp.isActive || !hasKeyWindow || self.windows.contains(where: { !$0.isVisible }) {
-                self.reveal()
                 self.restoreOverlays()
             }
         }
@@ -273,24 +292,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     @objc private func restoreOverlays() {
+        recoverOverlays(with: DisplayLayout.current)
+    }
+
+    private func recoverOverlays(with layout: [DisplayLayout], present: Bool = true) {
         guard isPrankArmed else { return }
-        synchronizeOverlays(with: DisplayLayout.current)
+        synchronizeOverlays(with: layout, present: present)
     }
 
     func applicationDidResignActive(_ notification: Notification) {
         guard isPrankArmed else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isPrankArmed else { return }
-            self.unlock?.reset()
-            self.reveal()
             self.restoreOverlays()
         }
     }
 
     @objc private func spaceChanged() {
         guard isPrankArmed else { return }
-        unlock?.reset()
-        reveal()
         restoreOverlays()
     }
 
@@ -311,8 +330,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
                 case .unlocked: disarm()
                 }
             default:
-                unlock?.reset()
-                trigger()
+                if PrankTrigger.isInteraction(event) { unlock?.reset(); trigger() }
             }
             // Consume all local input while armed, including menu and WebKit events.
             return nil
@@ -570,7 +588,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     func windowShouldClose(_ sender: NSWindow) -> Bool { !isPrankArmed }
     func windowWillClose(_ notification: Notification) {
-        if isPrankArmed { reveal(); restoreOverlays() }
+        if isPrankArmed { restoreOverlays() }
         else { disarm() }
     }
 
@@ -609,6 +627,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         func key(_ text: String, flags: NSEvent.ModifierFlags = []) -> NSEvent {
             NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: 0)!
         }
+        func mouse(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
+        }
+        func system(_ subtype: Int16, _ data: Int) -> NSEvent {
+            NSEvent.otherEvent(with: .systemDefined, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, subtype: subtype, data1: data, data2: 0)!
+        }
+        let stillScroll = NSEvent(cgEvent: CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: 0, wheel2: 0, wheel3: 0)!)!
+        let activeScroll = NSEvent(cgEvent: CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: 1, wheel2: 0, wheel3: 0)!)!
+        let quietEvents = [mouse(.mouseMoved), mouse(.leftMouseUp), mouse(.rightMouseUp), system(0, 0), system(8, 0x0b00), stillScroll]
+        precondition(handle(key("/test-")) == nil && !revealed)
+        for event in quietEvents {
+            precondition(handle(event) == nil && !revealed && isPrankArmed)
+        }
+        recoverOverlays(with: [internalDisplay, externalDisplay], present: false)
+        recoverOverlays(with: [], present: false)
+        recoverOverlays(with: [internalDisplay], present: false)
+        precondition(!revealed && isPrankArmed && webViews.isEmpty)
+        precondition(unlock!.feed("code") == .unlocked)
+        for event in [mouse(.leftMouseDown), mouse(.rightMouseDown), system(8, (16 << 16) | 0x0a00), activeScroll] {
+            precondition(handle(event) == nil && revealed && isPrankArmed)
+            revealed = false
+            webViews.forEach { $0.stopLoading() }
+            webViews.removeAll()
+        }
         precondition(handle(key("x")) == nil && revealed && isPrankArmed)
         precondition(handle(key("q", flags: .command)) == nil && isPrankArmed)
         precondition(handle(key("\u{1b}")) == nil && isPrankArmed)
@@ -638,7 +680,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         precondition(revealed && isPrankArmed)
         precondition(handle(key("/test-code")) == nil)
         precondition(!isPrankArmed && windows.isEmpty && webViews.isEmpty)
-        print("PASS: display lifecycle, invalid-key trigger, shortcuts, menu/Dock quit rejection, close rejection and password unlock")
+        print("PASS: quiet pointer/system events and focus/display recovery preserve password input; click/media/invalid-key triggers, quit rejection and password unlock")
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isPrankArmed else { reveal(); return .terminateCancel }
