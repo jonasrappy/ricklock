@@ -6,6 +6,7 @@ A local macOS menu-bar prank with a pinned lock icon in the Dock. This is not a 
 
 - Click the Dock lock, or select **Activate prank** from the theater-mask menu-bar icon. Activation does not require a code.
 - After three seconds, transparent input-blocking windows cover every display. Your current apps, Dock and menu bar remain visible underneath, with no screenshot, tint or blur.
+- A small green dot beside the menu-bar icon means RickLock is armed. It disappears when you unlock. Hover over the icon to see "locked" or "ready".
 - The first click or scroll reveals the Rick Astley GIF and the message, starts the camera, and displays one photo underneath **BUSTED** in the center. The photo then saves in the background to **Desktop/capture**.
 - The camera indicator remains visible. The camera shuts off after capture, on error, or when the prank is dismissed. There is no audio capture or saved video.
 - Type `/` followed by your agreed code to dismiss. No Enter is required.
@@ -30,7 +31,7 @@ The archive is outside the app bundle, so rebuilding does not replace the photos
 
 The capture session is configured while the overlay is armed, but starts running only on the first click or scroll. Capture begins immediately, in parallel with loading the Rickroll page. The first usable frame is encoded without a fixed exposure-settling delay. Near-black startup frames are skipped for at most 150 ms; lighting may still be less stable than after waiting longer. The photo is delivered without waiting for camera shutdown. Starting camera hardware is not instantaneous. A capture timeout or unlocking cancels capture; saving of an already captured and displayed photo continues. Each activation produces at most one photo, even with multiple displays or repeated clicks.
 
-All UI copy, comments, and documentation are in English. The supplied desktop screenshots are preserved as original user assets. The app uses local GIF and image files, stores the unlock code as a hash, and consumes keyboard events only in its own prank windows. Other apps continue running. It does not change system sleep or lock settings and restores its presentation settings on dismissal.
+All UI copy, comments, and documentation are in English. The app uses a local GIF, stores the unlock code as a hash, and consumes keyboard events only in its own prank windows. Other apps continue running. It does not change system sleep or lock settings and restores its presentation settings on dismissal.
 
 System force quit and restart remain available. Use the real macOS lock to protect data. Display changes and sleep do not dismiss RickLock; type your unlock code to dismiss it normally.
 
@@ -46,7 +47,7 @@ Set `RICKLOCK_PASSWORD` in `.env` without a leading slash. For example, `RICKLOC
 
 `.env` is ignored by Git. Commit `.env.example`, but never commit `.env`. The build copies `.env` with owner-only permissions to `~/Library/Application Support/RickLock/.env`; the app reads that file when each prank is activated and keeps only its hash in memory. The secret is not compiled into Swift or copied into the app bundle. Re-run `./build.sh` after changing the source `.env`.
 
-The original `desktop.png` and `desktop-internal.png` assets remain in the repository but are no longer displayed or required for building.
+The old desktop screenshot assets have been removed. Building does not require desktop screenshots.
 
 - `main.swift`: menu-bar app, overlay lifecycle, camera UI, and local unlock handling.
 - `RickLockConfiguration.swift`: strict `.env` loading for the unlock password.

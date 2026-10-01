@@ -83,7 +83,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         NSApp.setActivationPolicy(.accessory)
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "theatermasks.fill", accessibilityDescription: "RickLock")
-        item.button?.toolTip = "RickLock — hands off this computer"
+        item.button?.imagePosition = .imageLeft
+        updateStatusIndicator()
         let menu = NSMenu()
         menu.addItem(withTitle: "Activate prank", action: #selector(activatePrank), keyEquivalent: "")
         menu.addItem(withTitle: "Preview prank (camera off)", action: #selector(demo), keyEquivalent: "")
@@ -153,6 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         resetCamera()
         unlock?.reset()
         isPrankArmed = true
+        updateStatusIndicator()
         if !CommandLine.arguments.contains("--overlay-ui-test") { camera.prepare() }
         previousPresentation = NSApp.presentationOptions
         NSApp.presentationOptions = [.disableHideApplication]
@@ -411,6 +413,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         item?.button?.title = ""
         let restorePresentation = isPrankArmed
         isPrankArmed = false
+        updateStatusIndicator()
         screenLayout.removeAll()
         if restorePresentation { NSApp.presentationOptions = previousPresentation }
         unlock?.reset()
@@ -423,6 +426,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         previousApp?.activate(options: [])
         previousApp = nil
         scheduleUpdateCheck(after: 2)
+    }
+
+    private func updateStatusIndicator() {
+        item?.button?.attributedTitle = NSAttributedString(
+            string: isPrankArmed ? " ●" : "",
+            attributes: [.foregroundColor: NSColor.systemGreen, .font: NSFont.systemFont(ofSize: 9)]
+        )
+        let status = isPrankArmed ? "RickLock — locked" : "RickLock — ready"
+        item?.button?.toolTip = status
+        item?.button?.setAccessibilityLabel(status)
     }
 
     private func scheduleUpdateCheck(after delay: TimeInterval) {
