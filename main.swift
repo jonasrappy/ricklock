@@ -9,25 +9,33 @@ func digest(_ value: String) -> String {
 }
 
 final class UnlockInput {
+    enum Result { case pending, rejected, unlocked }
     let expected: String
+    private let prefixes: Set<String>
     private var buffer = ""
     private var lastInput = Date.distantPast
-    init(expected: String) { self.expected = expected }
+    init(password: String) {
+        expected = digest(password)
+        var prefix = ""
+        var hashes: Set<String> = [digest("")]
+        for character in password { prefix.append(character); hashes.insert(digest(prefix)) }
+        prefixes = hashes
+    }
     func accepts(_ value: String) -> Bool { digest(value) == expected }
     func reset() { buffer = ""; lastInput = .distantPast }
-    func feed(_ text: String, now: Date = Date()) -> Bool {
+    func feed(_ text: String, now: Date = Date()) -> Result {
         if now.timeIntervalSince(lastInput) > 15 { buffer = "" }
         lastInput = now
+        guard !text.isEmpty else { reset(); return .rejected }
         for character in text {
-            if character == "/" { buffer = "/"; continue }
-            guard buffer.hasPrefix("/") else { continue }
-            if character == "\u{7f}" { if buffer.count > 1 { buffer.removeLast() }; continue }
-            if character == "\r" || character == "\n" { buffer = ""; continue }
+            if buffer.isEmpty, character == "/" { buffer = "/"; continue }
+            guard buffer.hasPrefix("/") else { reset(); return .rejected }
+            if character == "\u{7f}" || character == "\u{8}" { buffer.removeLast(); continue }
             buffer.append(character)
-            if accepts(String(buffer.dropFirst())) { reset(); return true }
-            if buffer.count > 80 { reset() }
+            guard prefixes.contains(digest(String(buffer.dropFirst()))) else { reset(); return .rejected }
         }
-        return false
+        if buffer.hasPrefix("/"), accepts(String(buffer.dropFirst())) { reset(); return .unlocked }
+        return .pending
     }
 }
 
@@ -54,11 +62,14 @@ struct DisplayLayout: Equatable {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, NSMenuItemValidation {
     private var item: NSStatusItem!
     private var windows: [NSWindow] = []
     private var webViews: [WKWebView] = []
     private var monitor: Any?
+    private var overlayGuard: Timer?
+    private let inputFilter = ExclusiveInput()
+    private var pendingReveal: DispatchWorkItem?
     private var revealed = false
     private var isPrankArmed = false
     private var previousPresentation: NSApplication.PresentationOptions = []
@@ -100,19 +111,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         appMenu.submenu = menu.copy() as? NSMenu
         mainMenu.addItem(appMenu)
         NSApp.mainMenu = mainMenu
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]) { [weak self] event in
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp, .scrollWheel, .swipe, .magnify, .rotate, .smartMagnify, .systemDefined]) { [weak self] event in
             guard let self else { return event }
             return self.handle(event)
         }
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(restoreOverlays), name: NSWorkspace.didWakeNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(restoreOverlays), name: NSWorkspace.screensDidWakeNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(spaceChanged), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
         if CommandLine.arguments.contains("--overlay-ui-test") {
-            unlock = UnlockInput(expected: digest("test-code"))
+            unlock = UnlockInput(password: "test-code")
             arm()
             cameraStarted = true
             cameraState = ["phase": "demo", "message": "PREVIEW — CAMERA OFF", "photo": ""]
-            DispatchQueue.main.asyncAfter(deadline: .now() + 45) { [weak self] in self?.quit() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 45) { [weak self] in self?.disarm(); NSApp.terminate(nil) }
         } else if CommandLine.arguments.contains("--camera-demo") {
             testCamera()
         } else if CommandLine.arguments.contains("--demo") {
@@ -149,17 +161,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     private func arm() {
         item.button?.title = ""
+        guard inputFilter.start(handler: { [weak self] event in
+            guard let self, self.isPrankArmed else { return }
+            if let local = NSEvent(cgEvent: event) { _ = self.handle(local, deferReveal: true) }
+            else { self.unlock?.reset(); self.queueReveal() }
+        }) else {
+            showInputPermissionError()
+            return
+        }
         revealed = false
         cameraDemo = false
         resetCamera()
         unlock?.reset()
         isPrankArmed = true
+        inputFilter.isBlocking = true
         updateStatusIndicator()
         if !CommandLine.arguments.contains("--overlay-ui-test") { camera.prepare() }
         previousPresentation = NSApp.presentationOptions
-        NSApp.presentationOptions = [.disableHideApplication]
+        NSApp.presentationOptions = [.autoHideDock, .disableProcessSwitching, .disableHideApplication, .disableAppleMenu]
         synchronizeOverlays(with: DisplayLayout.current)
+        overlayGuard?.invalidate()
+        overlayGuard = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self, self.isPrankArmed, !self.windows.isEmpty else { return }
+            self.inputFilter.ensureEnabled()
+            let hasKeyWindow = self.windows.contains { $0 === NSApp.keyWindow }
+            if !NSApp.isActive || !hasKeyWindow || self.windows.contains(where: { !$0.isVisible }) {
+                self.reveal()
+                self.restoreOverlays()
+            }
+        }
         NSLog("RickLock: armed on %ld screen(s)", windows.count)
+    }
+
+    private func showInputPermissionError() {
+        inputFilter.stop()
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "RickLock needs Accessibility access"
+        alert.informativeText = "To block keyboard shortcuts, media keys, mouse and scroll input, allow RickLock in System Settings > Privacy & Security > Accessibility, then restart RickLock. The prank has not been armed because its exclusive input filter could not start."
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+        }
+    }
+
+    private func queueReveal() {
+        guard !revealed, pendingReveal == nil else { return }
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingReveal = nil
+            if self.isPrankArmed { self.reveal() }
+        }
+        pendingReveal = task
+        DispatchQueue.main.async(execute: task)
     }
 
     private func synchronizeOverlays(with layout: [DisplayLayout], present: Bool = true) {
@@ -224,16 +279,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     func applicationDidResignActive(_ notification: Notification) {
         guard isPrankArmed else { return }
-        DispatchQueue.main.async { [weak self] in self?.restoreOverlays() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isPrankArmed else { return }
+            self.unlock?.reset()
+            self.reveal()
+            self.restoreOverlays()
+        }
     }
 
-    private func handle(_ event: NSEvent) -> NSEvent? {
+    @objc private func spaceChanged() {
+        guard isPrankArmed else { return }
+        unlock?.reset()
+        reveal()
+        restoreOverlays()
+    }
+
+    private func handle(_ event: NSEvent, deferReveal: Bool = false) -> NSEvent? {
+        if isPrankArmed {
+            let trigger = { if deferReveal { self.queueReveal() } else { self.reveal() } }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            switch event.type {
+            case .keyUp:
+                break
+            case .flagsChanged:
+                if flags.contains(.command) || flags.contains(.control) { unlock?.reset(); trigger() }
+            case .keyDown:
+                guard !flags.contains(.command), !flags.contains(.control) else { unlock?.reset(); trigger(); return nil }
+                switch unlock?.feed(event.characters ?? "") ?? .rejected {
+                case .pending: break
+                case .rejected: trigger()
+                case .unlocked: disarm()
+                }
+            default:
+                unlock?.reset()
+                trigger()
+            }
+            // Consume all local input while armed, including menu and WebKit events.
+            return nil
+        }
         guard !windows.isEmpty, let eventWindow = event.window, windows.contains(where: { $0 === eventWindow }) else { return event }
         if event.type == .keyDown {
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if !isPrankArmed, flags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "q" { quit(); return nil }
             // Characters are consumed only inside our overlay, never logged or forwarded to WebKit.
-            if !flags.contains(.command), !flags.contains(.control), unlock?.feed(event.characters ?? "") == true { disarm() }
+            if !flags.contains(.command), !flags.contains(.control), unlock?.feed(event.characters ?? "") == .unlocked { disarm() }
             return nil
         }
         if !revealed { reveal(); return nil }
@@ -362,6 +451,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     @objc private func openPhotos() {
+        guard !isPrankArmed else { reveal(); return }
         do {
             try PhotoArchive.prepareDirectory()
             NSWorkspace.shared.open(PhotoArchive.directory)
@@ -373,7 +463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private func loadUnlockConfiguration() -> Bool {
         do {
             let password = try RickLockConfiguration.loadPassword()
-            unlock = UnlockInput(expected: digest(password))
+            unlock = UnlockInput(password: password)
             return true
         } catch {
             unlock = nil
@@ -408,6 +498,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     @objc private func disarm() {
         NSLog("RickLock: disarmed")
         pendingArm?.cancel(); pendingArm = nil
+        pendingReveal?.cancel(); pendingReveal = nil
+        inputFilter.stop()
+        overlayGuard?.invalidate(); overlayGuard = nil
         resetCamera()
         cameraDemo = false
         item?.button?.title = ""
@@ -475,9 +568,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         }
     }
 
-    func windowWillClose(_ notification: Notification) { disarm() }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { !isPrankArmed }
+    func windowWillClose(_ notification: Notification) {
+        if isPrankArmed { reveal(); restoreOverlays() }
+        else { disarm() }
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { !isPrankArmed }
 
     @objc private func help() {
+        guard !isPrankArmed else { reveal(); return }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "RickLock 🎭"
@@ -485,10 +585,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         alert.runModal()
     }
 
-    @objc private func quit() { disarm(); NSApp.terminate(nil) }
+    @objc private func quit() {
+        guard !isPrankArmed else { reveal(); return }
+        disarm(); NSApp.terminate(nil)
+    }
 
     func testOverlayLifecycle() {
-        unlock = UnlockInput(expected: digest("test-code"))
+        unlock = UnlockInput(password: "test-code")
         isPrankArmed = true
         let internalDisplay = DisplayLayout(id: 1, frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         let externalDisplay = DisplayLayout(id: 2, frame: NSRect(x: 800, y: 0, width: 1200, height: 800))
@@ -498,10 +601,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         precondition(!internalWindow.isOpaque && internalWindow.backgroundColor == .clear)
         precondition(!internalWindow.ignoresMouseEvents)
         precondition(internalWindow.contentView?.hitTest(NSPoint(x: 10, y: 10)) != nil)
-        precondition(!unlock!.feed("/test-"))
+        precondition(unlock!.feed("/test-") == .pending)
         synchronizeOverlays(with: [internalDisplay], present: false)
         precondition(isPrankArmed && windows.count == 1 && windows[0] === internalWindow)
-        precondition(unlock!.feed("code"))
+        precondition(unlock!.feed("code") == .unlocked)
+        cameraStarted = true
+        func key(_ text: String, flags: NSEvent.ModifierFlags = []) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: 0)!
+        }
+        precondition(handle(key("x")) == nil && revealed && isPrankArmed)
+        precondition(handle(key("q", flags: .command)) == nil && isPrankArmed)
+        precondition(handle(key("\u{1b}")) == nil && isPrankArmed)
+        precondition(!windowShouldClose(internalWindow))
+        precondition(!validateMenuItem(NSMenuItem(title: "Quit RickLock", action: #selector(quit), keyEquivalent: "q")))
+        precondition(applicationShouldTerminate(NSApp) == .terminateCancel)
+        quit()
+        precondition(isPrankArmed)
         synchronizeOverlays(with: [], present: false)
         precondition(isPrankArmed && windows.isEmpty)
         activatePrank()
@@ -521,30 +636,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         synchronizeOverlays(with: [resized], present: false)
         precondition(windows[0] === survivingWindow && survivingWindow.frame == resized.frame)
         precondition(revealed && isPrankArmed)
-        disarm()
+        precondition(handle(key("/test-code")) == nil)
         precondition(!isPrankArmed && windows.isEmpty && webViews.isEmpty)
-        print("PASS: transparent input view, unplug, reconnect, zero displays, resize, revealed state and unlock preservation")
+        print("PASS: display lifecycle, invalid-key trigger, shortcuts, menu/Dock quit rejection, close rejection and password unlock")
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isPrankArmed else { reveal(); return .terminateCancel }
         guard pendingPhotoSaves > 0 else { return .terminateNow }
         terminationWaitingForSave = true
         return .terminateLater
     }
-    func applicationWillTerminate(_ notification: Notification) { updateTimer?.invalidate(); camera.cancel(); if let monitor { NSEvent.removeMonitor(monitor) } }
+    func applicationWillTerminate(_ notification: Notification) { inputFilter.stop(); overlayGuard?.invalidate(); updateTimer?.invalidate(); camera.cancel(); if let monitor { NSEvent.removeMonitor(monitor) } }
 }
 
 if CommandLine.arguments.contains("--self-test") {
-    let input = UnlockInput(expected: digest("test-code"))
-    precondition(!input.feed("test-code"))
-    precondition(!input.feed("/wrong"))
-    precondition(input.feed("/test-code"))
-    precondition(!input.feed("/test-"))
-    precondition(input.feed("code"))
-    precondition(!input.feed("/test-x\u{7f}"))
-    precondition(input.feed("code"))
+    for type in [CGEventType.keyDown, .keyUp, .flagsChanged, .mouseMoved, .leftMouseDown, .rightMouseDown, .scrollWheel, CGEventType(rawValue: 14)!, CGEventType(rawValue: 29)!] {
+        precondition(ExclusiveInput.shouldConsume(type, whileBlocking: true))
+        precondition(!ExclusiveInput.shouldConsume(type, whileBlocking: false))
+    }
+    precondition(!ExclusiveInput.shouldConsume(.tapDisabledByTimeout, whileBlocking: true))
+    let input = UnlockInput(password: "test-code")
+    precondition(input.feed("test-code") == .rejected)
+    precondition(input.feed("/wrong") == .rejected)
+    precondition(input.feed("/test-code") == .unlocked)
+    precondition(input.feed("/") == .pending)
+    precondition(input.feed("test-") == .pending)
+    precondition(input.feed("code") == .unlocked)
+    precondition(input.feed("/test-c\u{7f}") == .pending)
+    precondition(input.feed("code") == .unlocked)
+    precondition(input.feed("/test-x") == .rejected)
+    precondition(input.feed("/test-codeX") == .rejected)
+    precondition(input.feed("/test-code") == .unlocked)
+    precondition(input.feed("/\t") == .rejected)
+    precondition(input.feed("") == .rejected)
+    precondition(input.feed("/\u{7f}") == .pending)
+    precondition(input.feed("test-code") == .rejected)
+    let slashCode = UnlockInput(password: "some/code")
+    precondition(slashCode.feed("/some/code") == .unlocked)
     let now = Date()
-    precondition(!input.feed("/test-", now: now))
-    precondition(!input.feed("code", now: now.addingTimeInterval(16)))
+    precondition(input.feed("/test-", now: now) == .pending)
+    precondition(input.feed("code", now: now.addingTimeInterval(16)) == .rejected)
     let plainPassword = try RickLockConfiguration.parsePassword(from: "# ignored\nRICKLOCK_PASSWORD=test-code\n")
     let quotedPassword = try RickLockConfiguration.parsePassword(from: "export RICKLOCK_PASSWORD='quoted value'\n")
     precondition(plainPassword == "test-code")
@@ -553,11 +684,21 @@ if CommandLine.arguments.contains("--self-test") {
         _ = try RickLockConfiguration.parsePassword(from: "RICKLOCK_PASSWORD=/wrong\n")
         preconditionFailure("A leading slash in .env must be rejected")
     } catch RickLockConfigurationError.invalidPassword { }
-    print("PASS: .env parsing, slash prefix, wrong code, full code, split input, backspace and timeout")
+    print("PASS: input suppression policy including media keys/gestures, valid password prefixes, mismatch/trailing-input rejection, backspace and timeout")
     exit(0)
 }
 let app = NSApplication.shared
 let delegate = AppDelegate()
+if CommandLine.arguments.contains("--input-filter-check") {
+    let filter = ExclusiveInput()
+    guard filter.start(handler: { _ in }) else {
+        print("FAIL: exclusive input filter unavailable; grant RickLock Accessibility access")
+        exit(1)
+    }
+    filter.stop()
+    print("PASS: exclusive input filter can start; check did not block or record input")
+    exit(0)
+}
 if CommandLine.arguments.contains("--camera-speed-test") {
     app.setActivationPolicy(.accessory)
     let camera = BustedCamera()

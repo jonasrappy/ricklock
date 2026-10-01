@@ -7,8 +7,8 @@
 <key>CFBundleDisplayName</key><string>RickLock</string>
 <key>CFBundleIconFile</key><string>RickLock</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.2</string>
-<key>CFBundleVersion</key><string>7</string>
+<key>CFBundleShortVersionString</key><string>1.3</string>
+<key>CFBundleVersion</key><string>8</string>
 <key>NSDesktopFolderUsageDescription</key><string>RickLock saves captured Busted photos to the capture folder on your Desktop.</string>
 <key>NSCameraUsageDescription</key><string>RickLock takes one photo when the prank is triggered, displays it with BUSTED, and saves it only on this Mac.</string>
 <key>LSUIElement</key><true/>

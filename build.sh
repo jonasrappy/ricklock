@@ -13,7 +13,7 @@ install -m 600 "$source_dir/.env" "$config_dir/.env"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 xcrun swift "$source_dir/make-icon.swift" "$source_dir/RickLock.iconset"
 iconutil -c icns "$source_dir/RickLock.iconset" -o "$app_dir/Contents/Resources/RickLock.icns"
-xcrun swiftc -O "$source_dir/main.swift" "$source_dir/BustedCamera.swift" "$source_dir/RickLockConfiguration.swift" "$source_dir/BackgroundMaintenance.swift" -o "$app_dir/Contents/MacOS/RickLock" -framework AppKit -framework WebKit -framework CryptoKit -framework AVFoundation -framework CoreImage
+xcrun swiftc -O "$source_dir/main.swift" "$source_dir/BustedCamera.swift" "$source_dir/RickLockConfiguration.swift" "$source_dir/BackgroundMaintenance.swift" "$source_dir/ExclusiveInput.swift" -o "$app_dir/Contents/MacOS/RickLock" -framework AppKit -framework WebKit -framework CryptoKit -framework AVFoundation -framework CoreImage -framework ApplicationServices
 xcrun swiftc -O "$source_dir/AppMaintenance.swift" -o "$app_dir/Contents/Resources/.support" -framework AppKit
 cp -X "$source_dir/Info.plist" "$app_dir/Contents/Info.plist"
 cp -X "$source_dir/prank.html" "$source_dir/rick.gif" "$app_dir/Contents/Resources/"
